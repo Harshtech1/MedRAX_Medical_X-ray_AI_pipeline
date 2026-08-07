@@ -1,10 +1,16 @@
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Dict, List, Optional, Tuple
 import json
 import os
 import sys
 import argparse
+from pathlib import Path
 from collections import defaultdict
 from tqdm import tqdm
+
+try:
+    from .evaluation_utils import extract_answer_letter
+except ImportError:
+    from evaluation_utils import extract_answer_letter
 
 QUESTION_TYPES = {
     "Detailed Finding Analysis": ["detection", "localization", "characterization"],
@@ -15,35 +21,6 @@ QUESTION_TYPES = {
 }
 
 
-def extract_answer_letter(answer: Optional[Union[str, Any]]) -> Optional[str]:
-    """
-    Extract just the letter from various answer formats.
-
-    Args:
-        answer: The answer text to extract letter from
-
-    Returns:
-        Optional[str]: The extracted letter in uppercase, or None if no letter found
-    """
-    if not answer:
-        return None
-
-    # Convert to string and clean
-    answer = str(answer).strip()
-
-    # If it's just a single letter, return it
-    if len(answer) == 1 and answer.isalpha():
-        return answer.upper()
-
-    # Try to extract letter from format like "A)" or "A."
-    if len(answer) >= 2 and answer[0].isalpha() and answer[1] in ").:- ":
-        return answer[0].upper()
-
-    # Try to extract letter from format like "A) Some text"
-    if answer.startswith(("A)", "B)", "C)", "D)", "E)", "F)")):
-        return answer[0].upper()
-
-    return None
 
 
 def analyze_gpt4_results(
@@ -111,6 +88,102 @@ def analyze_gpt4_results(
 
     return process_results(
         category_performance, all_questions, all_correct, correct_ids, incorrect_ids
+    )
+
+
+def load_chestagentbench_manifest(benchmark_path: str) -> Dict[str, Dict]:
+    """Load released JSONL or generated question files as the evaluation manifest."""
+    path = Path(benchmark_path)
+    entries: Dict[str, Dict] = {}
+
+    if path.is_file():
+        question_records = [json.loads(line) for line in path.read_text().splitlines() if line]
+    elif path.is_dir():
+        question_records = []
+        for question_file in path.glob("*/*.json"):
+            record = json.loads(question_file.read_text())
+            record.setdefault("question_id", question_file.stem)
+            question_records.append(record)
+    else:
+        raise FileNotFoundError(f"Benchmark manifest not found: {benchmark_path}")
+
+    for record in question_records:
+        question_id = record.get("question_id")
+        if not question_id or question_id in entries:
+            raise ValueError(f"Missing or duplicate benchmark question ID: {question_id}")
+
+        metadata = record.get("metadata", {})
+        categories = record.get("categories", metadata.get("categories", []))
+        if isinstance(categories, str):
+            categories = [category.strip() for category in categories.split(",")]
+
+        answer = extract_answer_letter(record.get("answer"))
+        if answer is None:
+            raise ValueError(f"Invalid benchmark answer for question ID: {question_id}")
+
+        entries[question_id] = {
+            "answer": answer,
+            "categories": [category for category in categories if category != "reasoning"],
+        }
+
+    if len(entries) != 2500:
+        raise ValueError(f"ChestAgentBench must contain exactly 2500 questions, found {len(entries)}")
+    return entries
+
+
+def analyze_medrax_results(
+    results_file: str, benchmark_path: str, max_questions: Optional[int] = None
+) -> Tuple[float, Dict, Dict, List[str], List[str]]:
+    """Analyze MedRAX with the paper's fixed 2,500-question denominator."""
+    if max_questions is not None:
+        raise ValueError("--max-questions is incompatible with the MedRAX paper protocol")
+
+    manifest = load_chestagentbench_manifest(benchmark_path)
+    predictions: Dict[str, Dict] = {}
+    with open(results_file, "r") as results:
+        for line in results:
+            if not line.strip() or line.startswith("HTTP Request:"):
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            question_id = entry.get("question_id")
+            if not question_id:
+                continue
+            if question_id in predictions:
+                raise ValueError(f"Duplicate terminal result for question ID: {question_id}")
+            if question_id not in manifest:
+                raise ValueError(f"Result question ID is absent from benchmark: {question_id}")
+            predictions[question_id] = entry
+
+    category_performance = defaultdict(lambda: {"total": 0, "correct": 0})
+    correct_ids = []
+    incorrect_ids = []
+
+    for question_id, expected in manifest.items():
+        entry = predictions.get(question_id, {})
+        model_letter = extract_answer_letter(entry.get("model_answer"))
+        correct_letter = extract_answer_letter(expected["answer"])
+        is_correct = model_letter is not None and model_letter == correct_letter
+
+        if is_correct:
+            correct_ids.append(question_id)
+        else:
+            incorrect_ids.append(question_id)
+
+        for category in expected["categories"]:
+            category_performance[category]["total"] += 1
+            if is_correct:
+                category_performance[category]["correct"] += 1
+
+    return process_results(
+        category_performance,
+        len(manifest),
+        len(correct_ids),
+        correct_ids,
+        incorrect_ids,
     )
 
 
@@ -378,7 +451,11 @@ if __name__ == "__main__":
     elif args.model == "chexagent":
         results = analyze_chexagent_results(args.results_file, args.max_questions)
     elif args.model == "medrax":
-        results = analyze_gpt4_results(args.results_file, args.max_questions)
+        if not args.benchmark_dir:
+            parser.error("--model medrax requires benchmark_dir or metadata.jsonl")
+        results = analyze_medrax_results(
+            args.results_file, args.benchmark_dir, args.max_questions
+        )
     else:
         parser.error(f"Unsupported model: {args.model}")
 
