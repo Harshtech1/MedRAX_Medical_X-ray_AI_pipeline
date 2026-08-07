@@ -1,5 +1,6 @@
 import os
 import warnings
+import torch
 from typing import *
 from dotenv import load_dotenv
 from transformers import logging
@@ -50,8 +51,8 @@ def initialize_agent(
     all_tools = {
         "ChestXRayClassifierTool": lambda: ChestXRayClassifierTool(device=device),
         "ChestXRaySegmentationTool": lambda: ChestXRaySegmentationTool(device=device),
-        "LlavaMedTool": lambda: LlavaMedTool(cache_dir=model_dir, device=device, load_in_8bit=True),
-        "XRayVQATool": lambda: XRayVQATool(cache_dir=model_dir, device=device),
+        "LlavaMedTool": lambda: LlavaMedTool(cache_dir=model_dir, device="cpu", load_in_8bit=True),
+        "XRayVQATool": lambda: XRayVQATool(cache_dir=model_dir, device="cpu", dtype=torch.float32),
         "ChestXRayReportGeneratorTool": lambda: ChestXRayReportGeneratorTool(
             cache_dir=model_dir, device=device
         ),
@@ -73,7 +74,7 @@ def initialize_agent(
             tools_dict[tool_name] = all_tools[tool_name]()
 
     checkpointer = MemorySaver()
-    model = ChatOpenAI(model=model, temperature=temperature, top_p=top_p, **openai_kwargs)
+    model = ChatOpenAI(model=model, temperature=temperature, top_p=top_p, max_tokens=1024, **openai_kwargs)
     agent = Agent(
         model,
         tools=list(tools_dict.values()),
@@ -103,8 +104,8 @@ if __name__ == "__main__":
         "ChestXRaySegmentationTool",
         "ChestXRayReportGeneratorTool",
         "XRayVQATool",
-        # "LlavaMedTool",
-        # "XRayPhraseGroundingTool",
+        "LlavaMedTool",
+        "XRayPhraseGroundingTool",
         # "ChestXRayGeneratorTool",
     ]
 
@@ -119,7 +120,7 @@ if __name__ == "__main__":
     agent, tools_dict = initialize_agent(
         "medrax/docs/system_prompts.txt",
         tools_to_use=selected_tools,
-        model_dir="/model-weights",  # Change this to the path of the model weights
+        model_dir="model-weights",  # Local cache for automatically downloaded weights
         temp_dir="temp",  # Change this to the path of the temporary directory
         device="cuda",  # Change this to the device you want to use
         model="gpt-4o",  # Change this to the model you want to use, e.g. gpt-4o-mini
