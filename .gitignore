@@ -172,3 +172,4 @@ logs/
 temp/
 
 .gradio/
+.env
