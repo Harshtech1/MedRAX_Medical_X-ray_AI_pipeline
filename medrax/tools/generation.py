@@ -4,7 +4,6 @@ import uuid
 import tempfile
 import torch
 from pydantic import BaseModel, Field
-from diffusers import StableDiffusionPipeline
 from langchain_core.callbacks import AsyncCallbackManagerForToolRun, CallbackManagerForToolRun
 from langchain_core.tools import BaseTool
 
@@ -47,7 +46,7 @@ class ChestXRayGeneratorTool(BaseTool):
     )
     args_schema: Type[BaseModel] = ChestXRayGeneratorInput
 
-    model: StableDiffusionPipeline = None
+    model: "StableDiffusionPipeline" = None
     device: torch.device = None
     temp_dir: Path = None
 
@@ -60,6 +59,7 @@ class ChestXRayGeneratorTool(BaseTool):
     ):
         """Initialize the chest X-ray generator tool."""
         super().__init__()
+        from diffusers import StableDiffusionPipeline
         
         self.device = torch.device(device) if device else "cuda"
         self.model = StableDiffusionPipeline.from_pretrained(model_path, cache_dir=cache_dir)
